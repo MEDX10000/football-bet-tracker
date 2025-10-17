@@ -10,35 +10,78 @@ import plotly.graph_objects as go
 import json
 from functools import reduce
 import operator
+import sqlalchemy as sa
+from sqlalchemy import inspect, text, JSON
 
 # Initialize the app with Bootstrap theme
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
 load_figure_template("cyborg")  # Dark theme for charts
 app.title = "Football Bet Tracker Pro"
 
-# CSV filenames for persistence
-FILENAME = 'bets.csv'
-SETTINGS_FILENAME = 'settings.csv'
+# Database setup
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable not set")
+
+engine = sa.create_engine(DATABASE_URL)
+
+# Create tables if they don't exist
+with engine.connect() as conn:
+    inspector = inspect(engine)
+    
+    if not inspector.has_table('bets'):
+        conn.execute(text("""
+            CREATE TABLE bets (
+                date TIMESTAMP,
+                match TEXT,
+                prediction TEXT,
+                bet_amount FLOAT,
+                odds FLOAT,
+                outcome TEXT,
+                result_amount FLOAT,
+                profit_loss FLOAT,
+                wager_type TEXT,
+                selections JSONB,
+                slip_no INTEGER,
+                status TEXT
+            )
+        """))
+    
+    if not inspector.has_table('settings'):
+        conn.execute(text("""
+            CREATE TABLE settings (
+                key TEXT PRIMARY KEY,
+                value FLOAT
+            )
+        """))
+        # Insert default settings
+        defaults = [
+            {'key': 'initial_bankroll', 'value': 1000.0},
+            {'key': 'max_bet_percent', 'value': 5.0}
+        ]
+        for default in defaults:
+            conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value)"), default)
+        conn.commit()
 
 # Load data
 def load_data():
-    if os.path.exists(FILENAME):
-        df = pd.read_csv(FILENAME)
-        df['date'] = pd.to_datetime(df['date'])
-        if 'selections' in df.columns:
-            df['selections'] = df['selections'].apply(lambda x: json.loads(x) if pd.notna(x) and x != '' else [])
-        if 'wager_type' not in df.columns:
-            df['wager_type'] = 'Single'
-        if 'slip_no' not in df.columns:
-            df['slip_no'] = None
-        if 'status' not in df.columns:
-            df['status'] = 'Pending'
-        df = renumber_slips(df)
-    else:
-        df = pd.DataFrame(columns=[
-            'date', 'match', 'prediction', 'bet_amount', 'odds', 
-            'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
-        ])
+    with engine.connect() as conn:
+        df = pd.read_sql('SELECT * FROM bets', conn)
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            df['selections'] = df['selections'].apply(lambda x: x if isinstance(x, list) else [])
+            if 'wager_type' not in df.columns:
+                df['wager_type'] = 'Single'
+            if 'slip_no' not in df.columns:
+                df['slip_no'] = None
+            if 'status' not in df.columns:
+                df['status'] = 'Pending'
+            df = renumber_slips(df)
+        else:
+            df = pd.DataFrame(columns=[
+                'date', 'match', 'prediction', 'bet_amount', 'odds', 
+                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
+            ])
     return df
 
 def renumber_slips(df):
@@ -53,23 +96,26 @@ def renumber_slips(df):
 # Save data
 def save_data(df):
     df_save = df.copy()
-    df_save['selections'] = df_save['selections'].apply(lambda x: json.dumps(x) if isinstance(x, list) else '[]')
-    df_save.to_csv(FILENAME, index=False)
+    df_save['selections'] = df_save['selections'].apply(lambda x: x if isinstance(x, list) else [])
+    with engine.connect() as conn:
+        df_save.to_sql('bets', conn, if_exists='replace', index=False, dtype={'selections': JSON})
 
 # Load settings
 def load_settings():
-    if os.path.exists(SETTINGS_FILENAME):
-        settings_df = pd.read_csv(SETTINGS_FILENAME)
-        settings = dict(zip(settings_df['key'], settings_df['value']))
-    else:
-        settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
-        save_settings(settings)
+    with engine.connect() as conn:
+        settings_df = pd.read_sql('SELECT * FROM settings', conn)
+        if settings_df.empty:
+            settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
+            save_settings(settings)
+        else:
+            settings = dict(zip(settings_df['key'], settings_df['value']))
     return settings
 
 # Save settings
 def save_settings(settings):
     settings_df = pd.DataFrame(list(settings.items()), columns=['key', 'value'])
-    settings_df.to_csv(SETTINGS_FILENAME, index=False)
+    with engine.connect() as conn:
+        settings_df.to_sql('settings', conn, if_exists='replace', index=False)
 
 # Get display data for tables
 def get_display_data(df_raw, currency):
