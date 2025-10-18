@@ -157,22 +157,7 @@ initial_table_data = get_display_data(df, 'USD')
 
 # Function to categorize bet type
 def categorize_bet_type(row):
-    if row['wager_type'] == 'Accumulator':
-        return 'Accumulator'
-    if pd.isna(row['prediction']):
-        return None
-    parts = str(row['match']).split(' vs ')
-    if len(parts) != 2:
-        return row['prediction']  # fallback
-    home, away = parts
-    if row['prediction'] == home:
-        return 'Home Win'
-    elif row['prediction'] == away:
-        return 'Away Win'
-    elif row['prediction'] == 'Draw':
-        return 'Draw'
-    else:
-        return 'Other'
+    return row['wager_type']
 
 # Function to compute streaks
 def get_streaks(df):
@@ -445,7 +430,7 @@ charts_row = dbc.Row([
 analytics_row = dbc.Row([
     dbc.Col([
         dbc.Card([
-            dbc.CardHeader("Profit by Bet Category", className="h5"),
+            dbc.CardHeader("Profit by Bet Type", className="h5"),
             dbc.CardBody([
                 dcc.Graph(id='bet-category-bar-chart')
             ])
@@ -1199,11 +1184,11 @@ def update_display(data, currency, settings):
     type_fig = px.bar(title="No data for chart")
     if not df_new.empty and 'type_profit' in locals() and not type_profit.empty:
         type_fig = px.bar(type_profit, x='bet_category', y='profit_loss',
-                          title="Total Profit by Bet Category",
+                          title="Total Profit by Bet Type",
                           color='profit_loss',
                           color_continuous_scale=['red', 'green'],
-                          labels={'profit_loss': f'Total Profit/Loss ({symbol})', 'bet_category': 'Bet Category'})
-        type_fig.update_layout(xaxis_title="Bet Category", yaxis_title=f'Total Profit/Loss ({symbol})')
+                          labels={'profit_loss': f'Total Profit/Loss ({symbol})', 'bet_category': 'Bet Type'})
+        type_fig.update_layout(xaxis_title="Bet Type", yaxis_title=f'Total Profit/Loss ({symbol})')
     
     # Time-based charts
     yearly_fig = px.bar(title="No data for chart")
