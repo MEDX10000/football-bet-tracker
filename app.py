@@ -111,6 +111,7 @@ def save_data(df):
     df_save['selections'] = df_save['selections'].apply(lambda x: x if isinstance(x, list) else [])
     with engine.connect() as conn:
         df_save.to_sql('bets', conn, if_exists='replace', index=False, dtype={'selections': JSON})
+        conn.commit()
 
 # Load settings
 def load_settings():
@@ -128,6 +129,7 @@ def save_settings(settings):
     settings_df = pd.DataFrame(list(settings.items()), columns=['key', 'value'])
     with engine.connect() as conn:
         settings_df.to_sql('settings', conn, if_exists='replace', index=False)
+        conn.commit()
 
 # Get display data for tables
 def get_display_data(df_raw, currency):
