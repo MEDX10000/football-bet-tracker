@@ -12,6 +12,7 @@ from functools import reduce
 import operator
 import sqlalchemy as sa
 from sqlalchemy import inspect, text, JSON
+import numpy as np
 
 # Initialize the app with Bootstrap theme
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
@@ -41,7 +42,8 @@ with engine.connect() as conn:
                 result_amount FLOAT,
                 profit_loss FLOAT,
                 wager_type TEXT,
-                selections JSONB
+                selections JSONB,
+                status TEXT
             )
         """))
     
@@ -76,10 +78,12 @@ def load_data():
             df['selections'] = df['selections'].apply(lambda x: x if isinstance(x, list) else [])
             if 'wager_type' not in df.columns:
                 df['wager_type'] = 'Single'
+            if 'status' not in df.columns:
+                df['status'] = np.where(df['outcome'].isna(), 'Pending', np.where(df['profit_loss'] > 0, 'Win', 'Loss'))
         else:
             df = pd.DataFrame(columns=[
                 'date', 'match', 'prediction', 'bet_amount', 'odds', 
-                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections'
+                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'status'
             ])
             df = df.astype({
                 'bet_amount': 'float64',
@@ -265,27 +269,64 @@ add_bet_card = dbc.Card([
     ])
 ], className="mb-4")
 
+columns = [
+    {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
+    for i in df.columns if i not in ['status']
+]
+columns.append({"name": "Status", "id": "status"})
+
 update_outcome_card = dbc.Card([
     dbc.CardHeader("Manage Bets (Select a row to Update Outcome, Edit, or Delete)", className="h5"),
     dbc.CardBody([
         dash_table.DataTable(
             id='bets-table-update',
-            columns=[
-                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
-                for i in df.columns if i not in ['slip_no', 'status']
-            ],
+            columns=columns,
             data=initial_table_data,
             page_size=5,
             row_selectable='single',
-            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'minWidth': '0px', 'maxWidth': '500px', 'whiteSpace': 'normal'},
-            style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black'},
+            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'whiteSpace': 'normal', 'width': 'auto'},
+            style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black', 'width': 'auto'},
+            style_table={'overflowX': 'auto', 'width': '100%'},
             style_cell_conditional=[
+                {'if': {'column_id': 'date'}, 'width': '120px'},
+                {'if': {'column_id': 'match'}, 'width': '150px'},
+                {'if': {'column_id': 'prediction'}, 'width': '100px'},
+                {'if': {'column_id': 'bet_amount'}, 'width': '100px'},
+                {'if': {'column_id': 'odds'}, 'width': '80px'},
+                {'if': {'column_id': 'outcome'}, 'width': '100px'},
+                {'if': {'column_id': 'result_amount'}, 'width': '120px'},
+                {'if': {'column_id': 'profit_loss'}, 'width': '120px'},
+                {'if': {'column_id': 'wager_type'}, 'width': '100px'},
+                {'if': {'column_id': 'selections'}, 'width': '200px', 'overflow': 'auto'},
                 {
-                    'if': {'column_id': 'selections'},
-                    'whiteSpace': 'normal',
-                    'height': 'auto',
-                    'maxWidth': '200px',
-                    'overflow': 'auto'
+                    'if': {'column_id': 'status'},
+                    'display': 'none'
+                }
+            ],
+            style_header_conditional=[
+                {
+                    'if': {'column_id': 'status'},
+                    'display': 'none'
+                }
+            ],
+            style_data_conditional=[
+                {
+                    'if': {'filter_query': '{status} = Win'},
+                    'color': '#28a745',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'rgba(40, 167, 69, 0.1)'
+                },
+                {
+                    'if': {'filter_query': '{status} = Loss'},
+                    'color': '#dc3545',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'rgba(220, 53, 69, 0.1)'
+                },
+                {
+                    'if': {'filter_query': '{status} = Pending'},
+                    'color': 'white',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'transparent'
                 }
             ]
         ),
@@ -306,22 +347,53 @@ bets_table_card = dbc.Card([
     dbc.CardBody([
         dash_table.DataTable(
             id='bets-table',
-            columns=[
-                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
-                for i in df.columns if i not in ['slip_no', 'status']
-            ],
+            columns=columns,
             data=initial_table_data,
             page_size=5,
             row_selectable=None,
-            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'minWidth': '0px', 'maxWidth': '500px', 'whiteSpace': 'normal'},
-            style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black'},
+            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'whiteSpace': 'normal', 'width': 'auto'},
+            style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black', 'width': 'auto'},
+            style_table={'overflowX': 'auto', 'width': '100%'},
             style_cell_conditional=[
+                {'if': {'column_id': 'date'}, 'width': '120px'},
+                {'if': {'column_id': 'match'}, 'width': '150px'},
+                {'if': {'column_id': 'prediction'}, 'width': '100px'},
+                {'if': {'column_id': 'bet_amount'}, 'width': '100px'},
+                {'if': {'column_id': 'odds'}, 'width': '80px'},
+                {'if': {'column_id': 'outcome'}, 'width': '100px'},
+                {'if': {'column_id': 'result_amount'}, 'width': '120px'},
+                {'if': {'column_id': 'profit_loss'}, 'width': '120px'},
+                {'if': {'column_id': 'wager_type'}, 'width': '100px'},
+                {'if': {'column_id': 'selections'}, 'width': '200px', 'overflow': 'auto'},
                 {
-                    'if': {'column_id': 'selections'},
-                    'whiteSpace': 'normal',
-                    'height': 'auto',
-                    'maxWidth': '200px',
-                    'overflow': 'auto'
+                    'if': {'column_id': 'status'},
+                    'display': 'none'
+                }
+            ],
+            style_header_conditional=[
+                {
+                    'if': {'column_id': 'status'},
+                    'display': 'none'
+                }
+            ],
+            style_data_conditional=[
+                {
+                    'if': {'filter_query': '{status} = Win'},
+                    'color': '#28a745',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'rgba(40, 167, 69, 0.1)'
+                },
+                {
+                    'if': {'filter_query': '{status} = Loss'},
+                    'color': '#dc3545',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'rgba(220, 53, 69, 0.1)'
+                },
+                {
+                    'if': {'filter_query': '{status} = Pending'},
+                    'color': 'white',
+                    'fontWeight': 'bold',
+                    'backgroundColor': 'transparent'
                 }
             ]
         )
@@ -633,7 +705,8 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
             'result_amount': 0.0,
             'profit_loss': 0.0,
             'wager_type': wager_type,
-            'selections': selections
+            'selections': selections,
+            'status': 'Pending'
         }
         df_new = pd.DataFrame(data)
         df_new = df_new.astype({
@@ -767,15 +840,18 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
             new_outcome = None
             result_amount = 0.0
             profit_loss = 0.0
+            status = 'Pending'
         elif wager_type == 'Accumulator':
             if outcome_input in ['Win', 'Loss']:
                 new_outcome = outcome_input
                 if outcome_input == 'Win':
                     result_amount = round(bet_amount * odds, 2)
                     profit_loss = round(result_amount - bet_amount, 2)
+                    status = 'Win'
                 else:
                     result_amount = 0.0
                     profit_loss = round(-bet_amount, 2)
+                    status = 'Loss'
             else:
                 return no_update, no_update, no_update, "Invalid outcome for Accumulator. Use 'Win', 'Loss', or 'Pending'.", "danger", True
         else:  # Single
@@ -785,26 +861,30 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
                     new_outcome = prediction
                     result_amount = round(bet_amount * odds, 2)
                     profit_loss = round(result_amount - bet_amount, 2)
+                    status = 'Win'
                 else:
                     new_outcome = 'Loss'  # dummy
                     result_amount = 0.0
                     profit_loss = round(-bet_amount, 2)
+                    status = 'Loss'
             elif outcome_input == prediction:
                 new_outcome = outcome_input
                 result_amount = round(bet_amount * odds, 2)
                 profit_loss = round(result_amount - bet_amount, 2)
+                status = 'Win'
             else:
                 new_outcome = outcome_input
                 result_amount = 0.0
                 profit_loss = round(-bet_amount, 2)
+                status = 'Loss'
         df_new.at[idx, 'outcome'] = new_outcome
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
+        df_new.at[idx, 'status'] = status
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
-        status = 'Pending' if new_outcome is None else 'Win' if profit_loss > 0 else 'Loss'
-        feedback_msg = f"Bet updated to {status}!" if new_outcome is not None else "Bet set to Pending!"
-        return False, df_new.to_dict('records'), display_data, feedback_msg, "success" if profit_loss > 0 else "danger" if profit_loss < 0 else "info", True
+        feedback_msg = f"Bet updated to {status}!" if status != 'Pending' else "Bet set to Pending!"
+        return False, df_new.to_dict('records'), display_data, feedback_msg, "success" if status == 'Win' else "danger" if status == 'Loss' else "info", True
     return no_update, no_update, no_update, "Update failed - incomplete data.", "danger", True
 
 # Callback to open delete modal
@@ -893,6 +973,7 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
             new_outcome = None
             result_amount = 0.0
             profit_loss = 0.0
+            status = 'Pending'
             feedback_color = 'info'
         elif wager_type == 'Accumulator':
             if outcome_input in ['Win', 'Loss']:
@@ -900,10 +981,12 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
                 if outcome_input == 'Win':
                     result_amount = round(bet_amount * odds, 2)
                     profit_loss = round(result_amount - bet_amount, 2)
+                    status = 'Win'
                     feedback_color = 'success'
                 else:
                     result_amount = 0.0
                     profit_loss = round(-bet_amount, 2)
+                    status = 'Loss'
                     feedback_color = 'danger'
             else:
                 return "Invalid outcome for Accumulator. Use 'Win', 'Loss', or 'Pending'.", "danger", True, no_update, no_update
@@ -913,28 +996,32 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
                     new_outcome = prediction
                     result_amount = round(bet_amount * odds, 2)
                     profit_loss = round(result_amount - bet_amount, 2)
+                    status = 'Win'
                     feedback_color = 'success'
                 else:
                     new_outcome = 'Loss'  # dummy != prediction
                     result_amount = 0.0
                     profit_loss = round(-bet_amount, 2)
+                    status = 'Loss'
                     feedback_color = 'danger'
             elif outcome_input == prediction:
                 new_outcome = outcome_input
                 result_amount = round(bet_amount * odds, 2)
                 profit_loss = round(result_amount - bet_amount, 2)
+                status = 'Win'
                 feedback_color = 'success'
             else:
                 new_outcome = outcome_input
                 result_amount = 0.0
                 profit_loss = round(-bet_amount, 2)
+                status = 'Loss'
                 feedback_color = 'danger'
         df_new.at[idx, 'outcome'] = new_outcome
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
+        df_new.at[idx, 'status'] = status
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
-        status = 'Pending' if new_outcome is None else 'Win' if profit_loss > 0 else 'Loss'
         if status == 'Pending':
             feedback_msg = f"Set bet {idx} to Pending"
         else:
@@ -1002,6 +1089,7 @@ def update_display(data, currency, settings):
     })
     if not df_new.empty:
         df_new['date'] = pd.to_datetime(df_new['date'])
+        df_new['status'] = np.where(df_new['outcome'].isna(), 'Pending', np.where(df_new['profit_loss'] > 0, 'Win', 'Loss'))
     table_data = get_display_data(df_new, currency)
     
     symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
