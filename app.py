@@ -68,6 +68,12 @@ def load_data():
     with engine.connect() as conn:
         df = pd.read_sql('SELECT * FROM bets', conn)
         if not df.empty:
+            df = df.astype({
+                'bet_amount': 'float64',
+                'odds': 'float64',
+                'result_amount': 'float64',
+                'profit_loss': 'float64'
+            })
             df['date'] = pd.to_datetime(df['date'])
             df['selections'] = df['selections'].apply(lambda x: x if isinstance(x, list) else [])
             if 'wager_type' not in df.columns:
@@ -82,6 +88,12 @@ def load_data():
                 'date', 'match', 'prediction', 'bet_amount', 'odds', 
                 'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
             ])
+            df = df.astype({
+                'bet_amount': 'float64',
+                'odds': 'float64',
+                'result_amount': 'float64',
+                'profit_loss': 'float64'
+            })
     return df
 
 def renumber_slips(df):
@@ -680,6 +692,12 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
             'status': 'Pending'
         }
         df_new = pd.DataFrame(data)
+        df_new = df_new.astype({
+            'bet_amount': 'float64',
+            'odds': 'float64',
+            'result_amount': 'float64',
+            'profit_loss': 'float64'
+        })
         df_new = pd.concat([df_new, pd.DataFrame([new_bet])], ignore_index=True)
         df_new = renumber_slips(df_new)
         save_data(df_new)
@@ -760,6 +778,12 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
     if n_clicks > 0 and selected_rows and selected_rows[0] is not None and bet_amount:
         idx = selected_rows[0]
         df_new = pd.DataFrame(data)
+        df_new = df_new.astype({
+            'bet_amount': 'float64',
+            'odds': 'float64',
+            'result_amount': 'float64',
+            'profit_loss': 'float64'
+        })
         bet_amount = float(bet_amount)
         row = df_new.iloc[idx]
         prev_wager_type = df_new.at[idx, 'wager_type']
@@ -897,7 +921,14 @@ def close_delete_modal(n_clicks):
 def confirm_delete(n_clicks, data, selected_rows, currency):
     if n_clicks > 0 and selected_rows and selected_rows[0] is not None:
         idx = selected_rows[0]
-        df_new = pd.DataFrame(data).drop(idx).reset_index(drop=True)
+        df_new = pd.DataFrame(data)
+        df_new = df_new.astype({
+            'bet_amount': 'float64',
+            'odds': 'float64',
+            'result_amount': 'float64',
+            'profit_loss': 'float64'
+        })
+        df_new = df_new.drop(idx).reset_index(drop=True)
         df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
@@ -924,6 +955,12 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
     if n_clicks > 0 and selected_rows and selected_rows[0] is not None and outcome_input:
         idx = selected_rows[0]
         df_new = pd.DataFrame(data)
+        df_new = df_new.astype({
+            'bet_amount': 'float64',
+            'odds': 'float64',
+            'result_amount': 'float64',
+            'profit_loss': 'float64'
+        })
         row = df_new.iloc[idx]
         wager_type = row['wager_type']
         bet_amount = row['bet_amount']
@@ -1042,6 +1079,12 @@ def view_selections(active1, active2, close_clicks, data):
 )
 def update_display(data, currency, settings):
     df_new = pd.DataFrame(data)
+    df_new = df_new.astype({
+        'bet_amount': 'float64',
+        'odds': 'float64',
+        'result_amount': 'float64',
+        'profit_loss': 'float64'
+    })
     if not df_new.empty:
         df_new['date'] = pd.to_datetime(df_new['date'])
         df_new['status'] = df_new['status'].fillna('Pending')
