@@ -43,6 +43,7 @@ with engine.connect() as conn:
                 profit_loss FLOAT,
                 wager_type TEXT,
                 selections JSONB,
+                slip_no INTEGER,
                 status TEXT
             )
         """))
@@ -78,12 +79,15 @@ def load_data():
             df['selections'] = df['selections'].apply(lambda x: x if isinstance(x, list) else [])
             if 'wager_type' not in df.columns:
                 df['wager_type'] = 'Single'
+            if 'slip_no' not in df.columns:
+                df['slip_no'] = None
             if 'status' not in df.columns:
                 df['status'] = np.where(df['outcome'].isna(), 'Pending', np.where(df['profit_loss'] > 0, 'Win', 'Loss'))
+            df = renumber_slips(df)
         else:
             df = pd.DataFrame(columns=[
                 'date', 'match', 'prediction', 'bet_amount', 'odds', 
-                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'status'
+                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
             ])
             df = df.astype({
                 'bet_amount': 'float64',
@@ -91,6 +95,12 @@ def load_data():
                 'result_amount': 'float64',
                 'profit_loss': 'float64'
             })
+    return df
+
+def renumber_slips(df):
+    if not df.empty:
+        df = df.sort_values('date').reset_index(drop=True)
+        df['slip_no'] = df.index + 1
     return df
 
 # Save data
@@ -130,10 +140,12 @@ def get_display_data(df_raw, currency):
             lambda x: ', '.join(f"{s.get('match', '')} {s.get('prediction', '')} @ {round(s.get('odds', 1.0), 2):.2f}" for s in x) 
             if isinstance(x, list) and len(x) > 0 else ''
         )
+        df['slip_no'] = df['slip_no'].apply(lambda x: f"Slip No: {x}" if pd.notna(x) else '')
         df['bet_amount'] = df['bet_amount'].apply(lambda x: f"{symbol}{round(float(x), 2):.2f}" if pd.notna(x) else "")
         df['odds'] = df['odds'].apply(lambda x: f"{round(float(x), 2):.2f}" if pd.notna(x) else "")
         df['result_amount'] = df['result_amount'].apply(lambda x: f"{symbol}{round(float(x), 2):.2f}" if pd.notna(x) else "")
         df['profit_loss'] = df['profit_loss'].apply(lambda x: f"{symbol}{round(float(x), 2):+.2f}" if pd.notna(x) else "")
+        df['outcome'] = df['outcome'].fillna('Pending')
     return df.to_dict('records')
 
 # Initial data
@@ -270,7 +282,7 @@ add_bet_card = dbc.Card([
 ], className="mb-4")
 
 columns = [
-    {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
+    {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount', 'slip_no'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else 'Slip No' if i=='slip_no' else i.title(), "id": i} 
     for i in df.columns if i not in ['status']
 ]
 columns.append({"name": "Status", "id": "status"})
@@ -298,6 +310,7 @@ update_outcome_card = dbc.Card([
                 {'if': {'column_id': 'profit_loss'}, 'width': '120px'},
                 {'if': {'column_id': 'wager_type'}, 'width': '100px'},
                 {'if': {'column_id': 'selections'}, 'width': '200px', 'overflow': 'auto'},
+                {'if': {'column_id': 'slip_no'}, 'width': '100px'},
                 {
                     'if': {'column_id': 'status'},
                     'display': 'none'
@@ -365,6 +378,7 @@ bets_table_card = dbc.Card([
                 {'if': {'column_id': 'profit_loss'}, 'width': '120px'},
                 {'if': {'column_id': 'wager_type'}, 'width': '100px'},
                 {'if': {'column_id': 'selections'}, 'width': '200px', 'overflow': 'auto'},
+                {'if': {'column_id': 'slip_no'}, 'width': '100px'},
                 {
                     'if': {'column_id': 'status'},
                     'display': 'none'
@@ -695,6 +709,9 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
             total_odds = reduce(operator.mul, [s['odds'] for s in selections], 1.0)
             display_match = f"Accumulator ({len(selections)} selections)"
             odds = total_odds
+        df_new_temp = pd.DataFrame(data)
+        max_slip = df_new_temp['slip_no'].max() if not df_new_temp.empty and not df_new_temp['slip_no'].isna().all() else 0
+        slip_no = max_slip + 1
         new_bet = {
             'date': datetime.now().isoformat(),
             'match': display_match,
@@ -706,6 +723,7 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
             'profit_loss': 0.0,
             'wager_type': wager_type,
             'selections': selections,
+            'slip_no': slip_no,
             'status': 'Pending'
         }
         df_new = pd.DataFrame(data)
@@ -716,6 +734,7 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
             'profit_loss': 'float64'
         })
         df_new = pd.concat([df_new, pd.DataFrame([new_bet])], ignore_index=True)
+        df_new = renumber_slips(df_new)
         save_data(df_new)
         feedback_msg = f"{wager_type} bet added for {display_match}!"
         feedback_color = "warning" if is_risky else "success"
@@ -881,6 +900,7 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
         df_new.at[idx, 'status'] = status
+        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
         feedback_msg = f"Bet updated to {status}!" if status != 'Pending' else "Bet set to Pending!"
@@ -933,6 +953,7 @@ def confirm_delete(n_clicks, data, selected_rows, currency):
             'profit_loss': 'float64'
         })
         df_new = df_new.drop(idx).reset_index(drop=True)
+        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
         return False, df_new.to_dict('records'), display_data, "Bet deleted successfully!", "warning", True
@@ -1020,6 +1041,7 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
         df_new.at[idx, 'status'] = status
+        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
         if status == 'Pending':
@@ -1101,8 +1123,10 @@ def update_display(data, currency, settings):
     
     # Compute is_win for settled bets
     settled = pd.DataFrame()
+    unsettled_bets = 0
     if not df_new.empty:
         settled = df_new[df_new['outcome'].notna()].copy()
+        unsettled_bets = len(df_new) - len(settled)
         if not settled.empty:
             mask_single_win = (settled['wager_type'] == 'Single') & (settled['outcome'] == settled['prediction'])
             mask_acc_win = (settled['wager_type'] == 'Accumulator') & (settled['outcome'] == 'Win')
@@ -1132,6 +1156,7 @@ def update_display(data, currency, settings):
         summary = [
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Total Bets"), html.P(total_bets)], className="text-center")), width=3),
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Settled Bets"), html.P(settled_bets)], className="text-center")), width=3),
+            dbc.Col(dbc.Card(dbc.CardBody([html.H6("Unsettled Bets"), html.P(unsettled_bets)], className="text-center")), width=3),
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Wins"), html.P(wins)], className="text-center")), width=3),
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Losses"), html.P(losses)], className="text-center")), width=3),
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Win Rate"), html.P(f"{win_rate:.1f}%")], className="text-center")), width=3),
