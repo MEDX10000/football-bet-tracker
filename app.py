@@ -41,9 +41,7 @@ with engine.connect() as conn:
                 result_amount FLOAT,
                 profit_loss FLOAT,
                 wager_type TEXT,
-                selections JSONB,
-                slip_no INTEGER,
-                status TEXT
+                selections JSONB
             )
         """))
     
@@ -78,15 +76,10 @@ def load_data():
             df['selections'] = df['selections'].apply(lambda x: x if isinstance(x, list) else [])
             if 'wager_type' not in df.columns:
                 df['wager_type'] = 'Single'
-            if 'slip_no' not in df.columns:
-                df['slip_no'] = None
-            if 'status' not in df.columns:
-                df['status'] = 'Pending'
-            df = renumber_slips(df)
         else:
             df = pd.DataFrame(columns=[
                 'date', 'match', 'prediction', 'bet_amount', 'odds', 
-                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
+                'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections'
             ])
             df = df.astype({
                 'bet_amount': 'float64',
@@ -94,15 +87,6 @@ def load_data():
                 'result_amount': 'float64',
                 'profit_loss': 'float64'
             })
-    return df
-
-def renumber_slips(df):
-    if not df.empty:
-        acc_mask = df['wager_type'] == 'Accumulator'
-        if acc_mask.any():
-            acc_df = df[acc_mask].sort_values('date').reset_index(drop=True)
-            for i, orig_idx in enumerate(acc_df.index):
-                df.loc[orig_idx, 'slip_no'] = i + 1
     return df
 
 # Save data
@@ -139,15 +123,13 @@ def get_display_data(df_raw, currency):
     if not df.empty:
         df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d %H:%M')
         df['selections'] = df['selections'].apply(
-            lambda x: '\n'.join(f"{s.get('match', '')} {s.get('prediction', '')} @ {s.get('odds', 1.0):.2f}" for s in x) 
+            lambda x: ', '.join(f"{s.get('match', '')} {s.get('prediction', '')} @ {round(s.get('odds', 1.0), 2):.2f}" for s in x) 
             if isinstance(x, list) and len(x) > 0 else ''
         )
-        df['slip_no'] = df['slip_no'].apply(lambda x: f"Slip No: {x}" if pd.notna(x) else '')
-        df['status'] = df['status'].apply(lambda x: x if pd.notna(x) else 'Pending')
-        df['bet_amount'] = df['bet_amount'].apply(lambda x: f"{symbol}{float(x):.2f}" if pd.notna(x) else "")
-        df['odds'] = df['odds'].apply(lambda x: f"{float(x):.2f}" if pd.notna(x) else "")
-        df['result_amount'] = df['result_amount'].apply(lambda x: f"{symbol}{float(x):.2f}" if pd.notna(x) else "")
-        df['profit_loss'] = df['profit_loss'].apply(lambda x: f"{symbol}{float(x):+.2f}" if pd.notna(x) else "")
+        df['bet_amount'] = df['bet_amount'].apply(lambda x: f"{symbol}{round(float(x), 2):.2f}" if pd.notna(x) else "")
+        df['odds'] = df['odds'].apply(lambda x: f"{round(float(x), 2):.2f}" if pd.notna(x) else "")
+        df['result_amount'] = df['result_amount'].apply(lambda x: f"{symbol}{round(float(x), 2):.2f}" if pd.notna(x) else "")
+        df['profit_loss'] = df['profit_loss'].apply(lambda x: f"{symbol}{round(float(x), 2):+.2f}" if pd.notna(x) else "")
     return df.to_dict('records')
 
 # Initial data
@@ -181,7 +163,7 @@ def get_streaks(df):
     if df.empty:
         return 0, 0
     df_sorted = df.sort_values('date')
-    settled = df_sorted[df_sorted['status'] != 'Pending'].copy()
+    settled = df_sorted[df_sorted['outcome'].notna()].copy()
     if settled.empty:
         return 0, 0
     mask_single_win = (settled['wager_type'] == 'Single') & (settled['outcome'] == settled['prediction'])
@@ -270,11 +252,6 @@ add_bet_card = dbc.Card([
                     placeholder='Enter one selection per line:\nMatch Prediction Odds\n e.g.\nArsenal vs Tottenham Arsenal 1.8\nMan Utd vs Liverpool Draw 2.5',
                     rows=4
                 ),
-                dbc.Input(
-                    id='slip-no-input',
-                    placeholder='Slip No (optional, auto-generated if blank)',
-                    type='number'
-                ),
             ],
             className="mb-3"
         ),
@@ -294,32 +271,21 @@ update_outcome_card = dbc.Card([
         dash_table.DataTable(
             id='bets-table-update',
             columns=[
-                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount', 'slip_no', 'status'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else 'Slip No' if i=='slip_no' else 'Status' if i=='status' else i.title(), "id": i} 
-                for i in df.columns
+                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
+                for i in df.columns if i not in ['slip_no', 'status']
             ],
             data=initial_table_data,
             page_size=5,
             row_selectable='single',
-            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white'},
+            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'minWidth': '0px', 'maxWidth': '500px', 'whiteSpace': 'normal'},
             style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black'},
-            style_data_conditional=[
+            style_cell_conditional=[
                 {
-                    'if': {'filter_query': '{status} = Win'},
-                    'color': '#28a745',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'rgba(40, 167, 69, 0.1)'
-                },
-                {
-                    'if': {'filter_query': '{status} = Loss'},
-                    'color': '#dc3545',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'rgba(220, 53, 69, 0.1)'
-                },
-                {
-                    'if': {'filter_query': '{status} = Pending'},
-                    'color': 'white',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'transparent'
+                    'if': {'column_id': 'selections'},
+                    'whiteSpace': 'normal',
+                    'height': 'auto',
+                    'maxWidth': '200px',
+                    'overflow': 'auto'
                 }
             ]
         ),
@@ -341,32 +307,21 @@ bets_table_card = dbc.Card([
         dash_table.DataTable(
             id='bets-table',
             columns=[
-                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount', 'slip_no', 'status'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else 'Slip No' if i=='slip_no' else 'Status' if i=='status' else i.title(), "id": i} 
-                for i in df.columns
+                {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else i.title(), "id": i} 
+                for i in df.columns if i not in ['slip_no', 'status']
             ],
             data=initial_table_data,
-            page_size=10,
+            page_size=5,
             row_selectable=None,
-            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white'},
+            style_cell={'textAlign': 'left', 'padding': '10px', 'color': 'white', 'minWidth': '0px', 'maxWidth': '500px', 'whiteSpace': 'normal'},
             style_header={'backgroundColor': 'rgb(230, 230, 230)', 'fontWeight': 'bold', 'color': 'black'},
-            style_data_conditional=[
+            style_cell_conditional=[
                 {
-                    'if': {'filter_query': '{status} = Win'},
-                    'color': '#28a745',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'rgba(40, 167, 69, 0.1)'
-                },
-                {
-                    'if': {'filter_query': '{status} = Loss'},
-                    'color': '#dc3545',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'rgba(220, 53, 69, 0.1)'
-                },
-                {
-                    'if': {'filter_query': '{status} = Pending'},
-                    'color': 'white',
-                    'fontWeight': 'bold',
-                    'backgroundColor': 'transparent'
+                    'if': {'column_id': 'selections'},
+                    'whiteSpace': 'normal',
+                    'height': 'auto',
+                    'maxWidth': '200px',
+                    'overflow': 'auto'
                 }
             ]
         )
@@ -418,7 +373,7 @@ time_charts_row = dbc.Row([
         dbc.Card([
             dbc.CardHeader("Yearly P/L", className="h5"),
             dbc.CardBody([
-                dcc.Graph(id='yearly-chart')
+                dcc.Graph(id='yearly-chart', style={'height': '250px'})
             ])
         ])
     ], width=3),
@@ -426,7 +381,7 @@ time_charts_row = dbc.Row([
         dbc.Card([
             dbc.CardHeader("Monthly P/L", className="h5"),
             dbc.CardBody([
-                dcc.Graph(id='monthly-chart', style={'height': '300px'})
+                dcc.Graph(id='monthly-chart', style={'height': '250px'})
             ])
         ])
     ], width=3),
@@ -434,7 +389,7 @@ time_charts_row = dbc.Row([
         dbc.Card([
             dbc.CardHeader("Weekly P/L", className="h5"),
             dbc.CardBody([
-                dcc.Graph(id='weekly-chart', style={'height': '300px'})
+                dcc.Graph(id='weekly-chart', style={'height': '250px'})
             ])
         ])
     ], width=3),
@@ -442,7 +397,7 @@ time_charts_row = dbc.Row([
         dbc.Card([
             dbc.CardHeader("P/L by Day of Week", className="h5"),
             dbc.CardBody([
-                dcc.Graph(id='dow-chart')
+                dcc.Graph(id='dow-chart', style={'height': '250px'})
             ])
         ])
     ], width=3),
@@ -454,7 +409,7 @@ calendar_row = dbc.Row([
         dbc.Card([
             dbc.CardHeader("Betting Performance Calendar Heatmap", className="h5"),
             dbc.CardBody([
-                dcc.Graph(id='calendar-heatmap', style={'height': '400px'})
+                dcc.Graph(id='calendar-heatmap', style={'height': '300px'})
             ])
         ], className="mb-4")
     ], width=12)
@@ -490,11 +445,6 @@ edit_modal = dbc.Modal([
                     id='edit-selections-input',
                     placeholder='Enter one selection per line:\nMatch Prediction Odds',
                     rows=4
-                ),
-                dbc.Input(
-                    id='edit-slip-no',
-                    placeholder='Slip No',
-                    type='number'
                 ),
             ],
             className="mb-3"
@@ -618,7 +568,6 @@ def toggle_edit_inputs(bet_type):
      Output('match-input', 'value'),
      Output('prediction-input', 'value'),
      Output('selections-input', 'value'),
-     Output('slip-no-input', 'value'),
      Output('bet-amount-input', 'value'),
      Output('odds-input', 'value')],
     [Input('add-bet-btn', 'n_clicks')],
@@ -626,14 +575,13 @@ def toggle_edit_inputs(bet_type):
      State('match-input', 'value'),
      State('prediction-input', 'value'),
      State('selections-input', 'value'),
-     State('slip-no-input', 'value'),
      State('bet-amount-input', 'value'),
      State('odds-input', 'value'),
      State('data-store', 'data'),
      State('settings-store', 'data'),
      State('currency-store', 'data')]
 )
-def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input, bet_amount, odds_input, data, settings, currency):
+def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount, odds_input, data, settings, currency):
     symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
     symbol = symbols.get(currency, '$')
     if n_clicks > 0 and bet_amount:
@@ -648,15 +596,14 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
 
         if wager_type == 'Single':
             if not match or not prediction or not odds_input:
-                return "Missing match, prediction, or odds for Single bet.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+                return "Missing match, prediction, or odds for Single bet.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
             odds = float(odds_input)
             selections = [{'match': match, 'prediction': prediction, 'odds': odds}]
             display_match = match
             display_prediction = prediction
-            slip_no = None
         else:
             if not selections_text:
-                return "Missing selections for Accumulator.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+                return "Missing selections for Accumulator.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
             lines = [line.strip() for line in selections_text.split('\n') if line.strip()]
             selections = []
             for line in lines:
@@ -671,13 +618,10 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
                 except ValueError:
                     continue
             if not selections:
-                return "Invalid selections format for Accumulator. Each line should be 'Match Prediction Odds'.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+                return "Invalid selections format for Accumulator. Each line should be 'Match Prediction Odds'.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
             display_prediction = "Accumulator Win"
             total_odds = reduce(operator.mul, [s['odds'] for s in selections], 1.0)
-            df_new_temp = pd.DataFrame(data)
-            max_slip = df_new_temp['slip_no'].max() if not df_new_temp.empty and not df_new_temp['slip_no'].isna().all() else 0
-            slip_no = int(slip_input) if slip_input else max_slip + 1
-            display_match = f"Slip No: {slip_no} - Accumulator ({len(selections)} selections)"
+            display_match = f"Accumulator ({len(selections)} selections)"
             odds = total_odds
         new_bet = {
             'date': datetime.now().isoformat(),
@@ -686,12 +630,10 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
             'bet_amount': bet_amount,
             'odds': odds,
             'outcome': None,
-            'result_amount': 0,
-            'profit_loss': 0,
+            'result_amount': 0.0,
+            'profit_loss': 0.0,
             'wager_type': wager_type,
-            'selections': selections,
-            'slip_no': slip_no,
-            'status': 'Pending'
+            'selections': selections
         }
         df_new = pd.DataFrame(data)
         df_new = df_new.astype({
@@ -701,12 +643,11 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
             'profit_loss': 'float64'
         })
         df_new = pd.concat([df_new, pd.DataFrame([new_bet])], ignore_index=True)
-        df_new = renumber_slips(df_new)
         save_data(df_new)
         feedback_msg = f"{wager_type} bet added for {display_match}!"
         feedback_color = "warning" if is_risky else "success"
-        return feedback_msg, feedback_color, True, risky_msg if is_risky else "", is_risky, df_new.to_dict('records'), '', '', '', '', '', ''
-    return "", "info", False, "", False, no_update, no_update, no_update, no_update, no_update, no_update, no_update
+        return feedback_msg, feedback_color, True, risky_msg if is_risky else "", is_risky, df_new.to_dict('records'), '', '', '', '', ''
+    return "", "info", False, "", False, no_update, no_update, no_update, no_update, no_update, no_update
 
 # Callback to open edit modal
 @app.callback(
@@ -717,8 +658,7 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, slip_input
      Output('edit-bet-amount', 'value'),
      Output('edit-odds', 'value'),
      Output('edit-outcome', 'value'),
-     Output('edit-selections-input', 'value'),
-     Output('edit-slip-no', 'value')],
+     Output('edit-selections-input', 'value')],
     Input('edit-bet-btn', 'n_clicks'),
     [State('bets-table-update', 'selected_rows'),
      State('data-store', 'data')],
@@ -733,15 +673,13 @@ def open_edit_modal(n_clicks, selected_rows, data):
             match_val = row['match']
             pred_val = row['prediction']
             sel_val = ''
-            slip_val = ''
         else:
             match_val = ''
             pred_val = ''
             sel_val = '\n'.join(f"{s.get('match', '')} {s.get('prediction', '')} {s.get('odds', 1.0):.2f}" for s in row['selections'])
-            slip_val = row['slip_no'] if pd.notna(row['slip_no']) else ''
         outcome_val = row['outcome'] if pd.notna(row['outcome']) else ''
-        return True, wager_type, match_val, pred_val, row['bet_amount'], row['odds'], outcome_val, sel_val, slip_val
-    return False, 'Single', '', '', 0, 0, '', '', ''
+        return True, wager_type, match_val, pred_val, row['bet_amount'], row['odds'], outcome_val, sel_val
+    return False, 'Single', '', '', 0, 0, '', ''
 
 # Callback to close edit modal
 @app.callback(
@@ -768,13 +706,12 @@ def close_edit_modal(n_clicks):
      State('edit-odds', 'value'),
      State('edit-outcome', 'value'),
      State('edit-selections-input', 'value'),
-     State('edit-slip-no', 'value'),
      State('data-store', 'data'),
      State('bets-table-update', 'selected_rows'),
      State('currency-store', 'data')],
     prevent_initial_call=True
 )
-def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, outcome_input, selections_text, edit_slip_no, data, selected_rows, currency):
+def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, outcome_input, selections_text, data, selected_rows, currency):
     symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
     symbol = symbols.get(currency, '$')
     if n_clicks > 0 and selected_rows and selected_rows[0] is not None and bet_amount:
@@ -796,7 +733,6 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
             selections = [{'match': match, 'prediction': prediction, 'odds': odds}]
             display_match = match
             display_prediction = prediction
-            df_new.at[idx, 'slip_no'] = None
         else:
             if not selections_text:
                 return no_update, no_update, no_update, "Missing selections for Accumulator.", "danger", True
@@ -818,13 +754,7 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
             display_prediction = "Accumulator Win"
             total_odds = reduce(operator.mul, [s['odds'] for s in selections], 1.0)
             odds = total_odds
-            if prev_wager_type != 'Accumulator':
-                max_slip = df_new['slip_no'].max() if not df_new['slip_no'].isna().all() else 0
-                df_new.at[idx, 'slip_no'] = int(edit_slip_no) if edit_slip_no else max_slip + 1
-            else:
-                df_new.at[idx, 'slip_no'] = int(edit_slip_no) if edit_slip_no else df_new.at[idx, 'slip_no']
-            slip_no = df_new.at[idx, 'slip_no']
-            display_match = f"Slip No: {slip_no} - Accumulator ({len(selections)} selections)"
+            display_match = f"Accumulator ({len(selections)} selections)"
         # Update fields
         df_new.at[idx, 'wager_type'] = wager_type
         df_new.at[idx, 'match'] = display_match
@@ -833,22 +763,19 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
         df_new.at[idx, 'odds'] = odds
         df_new.at[idx, 'selections'] = selections
         # Handle outcome and status
-        if outcome_input == 'Pending':
+        if outcome_input == 'Pending' or not outcome_input:
             new_outcome = None
-            result_amount = 0
-            profit_loss = 0
-            status = 'Pending'
+            result_amount = 0.0
+            profit_loss = 0.0
         elif wager_type == 'Accumulator':
             if outcome_input in ['Win', 'Loss']:
                 new_outcome = outcome_input
                 if outcome_input == 'Win':
-                    result_amount = bet_amount * odds
-                    profit_loss = result_amount - bet_amount
-                    status = 'Win'
+                    result_amount = round(bet_amount * odds, 2)
+                    profit_loss = round(result_amount - bet_amount, 2)
                 else:
-                    result_amount = 0
-                    profit_loss = -bet_amount
-                    status = 'Loss'
+                    result_amount = 0.0
+                    profit_loss = round(-bet_amount, 2)
             else:
                 return no_update, no_update, no_update, "Invalid outcome for Accumulator. Use 'Win', 'Loss', or 'Pending'.", "danger", True
         else:  # Single
@@ -856,33 +783,28 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
             if outcome_input in ['Win', 'Loss']:
                 if outcome_input == 'Win':
                     new_outcome = prediction
-                    result_amount = bet_amount * odds
-                    profit_loss = result_amount - bet_amount
-                    status = 'Win'
+                    result_amount = round(bet_amount * odds, 2)
+                    profit_loss = round(result_amount - bet_amount, 2)
                 else:
                     new_outcome = 'Loss'  # dummy
-                    result_amount = 0
-                    profit_loss = -bet_amount
-                    status = 'Loss'
+                    result_amount = 0.0
+                    profit_loss = round(-bet_amount, 2)
             elif outcome_input == prediction:
                 new_outcome = outcome_input
-                result_amount = bet_amount * odds
-                profit_loss = result_amount - bet_amount
-                status = 'Win'
+                result_amount = round(bet_amount * odds, 2)
+                profit_loss = round(result_amount - bet_amount, 2)
             else:
                 new_outcome = outcome_input
-                result_amount = 0
-                profit_loss = -bet_amount
-                status = 'Loss'
+                result_amount = 0.0
+                profit_loss = round(-bet_amount, 2)
         df_new.at[idx, 'outcome'] = new_outcome
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
-        df_new.at[idx, 'status'] = status
-        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
-        feedback_msg = f"Bet updated to {status}!" if status != 'Pending' else "Bet set to Pending!"
-        return False, df_new.to_dict('records'), display_data, feedback_msg, "success" if status == 'Win' else "danger" if status == 'Loss' else "info", True
+        status = 'Pending' if new_outcome is None else 'Win' if profit_loss > 0 else 'Loss'
+        feedback_msg = f"Bet updated to {status}!" if new_outcome is not None else "Bet set to Pending!"
+        return False, df_new.to_dict('records'), display_data, feedback_msg, "success" if profit_loss > 0 else "danger" if profit_loss < 0 else "info", True
     return no_update, no_update, no_update, "Update failed - incomplete data.", "danger", True
 
 # Callback to open delete modal
@@ -931,7 +853,6 @@ def confirm_delete(n_clicks, data, selected_rows, currency):
             'profit_loss': 'float64'
         })
         df_new = df_new.drop(idx).reset_index(drop=True)
-        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
         return False, df_new.to_dict('records'), display_data, "Bet deleted successfully!", "warning", True
@@ -970,22 +891,19 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
         prediction = row['prediction']
         if outcome_input == 'Pending':
             new_outcome = None
-            result_amount = 0
-            profit_loss = 0
-            status = 'Pending'
+            result_amount = 0.0
+            profit_loss = 0.0
             feedback_color = 'info'
         elif wager_type == 'Accumulator':
             if outcome_input in ['Win', 'Loss']:
                 new_outcome = outcome_input
                 if outcome_input == 'Win':
-                    result_amount = bet_amount * odds
-                    profit_loss = result_amount - bet_amount
-                    status = 'Win'
+                    result_amount = round(bet_amount * odds, 2)
+                    profit_loss = round(result_amount - bet_amount, 2)
                     feedback_color = 'success'
                 else:
-                    result_amount = 0
-                    profit_loss = -bet_amount
-                    status = 'Loss'
+                    result_amount = 0.0
+                    profit_loss = round(-bet_amount, 2)
                     feedback_color = 'danger'
             else:
                 return "Invalid outcome for Accumulator. Use 'Win', 'Loss', or 'Pending'.", "danger", True, no_update, no_update
@@ -993,35 +911,30 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
             if outcome_input in ['Win', 'Loss']:
                 if outcome_input == 'Win':
                     new_outcome = prediction
-                    result_amount = bet_amount * odds
-                    profit_loss = result_amount - bet_amount
-                    status = 'Win'
+                    result_amount = round(bet_amount * odds, 2)
+                    profit_loss = round(result_amount - bet_amount, 2)
                     feedback_color = 'success'
                 else:
                     new_outcome = 'Loss'  # dummy != prediction
-                    result_amount = 0
-                    profit_loss = -bet_amount
-                    status = 'Loss'
+                    result_amount = 0.0
+                    profit_loss = round(-bet_amount, 2)
                     feedback_color = 'danger'
             elif outcome_input == prediction:
                 new_outcome = outcome_input
-                result_amount = bet_amount * odds
-                profit_loss = result_amount - bet_amount
-                status = 'Win'
+                result_amount = round(bet_amount * odds, 2)
+                profit_loss = round(result_amount - bet_amount, 2)
                 feedback_color = 'success'
             else:
                 new_outcome = outcome_input
-                result_amount = 0
-                profit_loss = -bet_amount
-                status = 'Loss'
+                result_amount = 0.0
+                profit_loss = round(-bet_amount, 2)
                 feedback_color = 'danger'
         df_new.at[idx, 'outcome'] = new_outcome
         df_new.at[idx, 'result_amount'] = result_amount
         df_new.at[idx, 'profit_loss'] = profit_loss
-        df_new.at[idx, 'status'] = status
-        df_new = renumber_slips(df_new)
         save_data(df_new)
         display_data = get_display_data(df_new, currency)
+        status = 'Pending' if new_outcome is None else 'Win' if profit_loss > 0 else 'Loss'
         if status == 'Pending':
             feedback_msg = f"Set bet {idx} to Pending"
         else:
@@ -1057,7 +970,7 @@ def view_selections(active1, active2, close_clicks, data):
         row = pd.DataFrame(data).iloc[idx]
         if row['wager_type'] == 'Accumulator' and isinstance(row['selections'], list) and len(row['selections']) > 0:
             picks_list = [
-                dbc.ListGroupItem(f"Match: {s.get('match', 'N/A')} | Prediction: {s.get('prediction', 'N/A')} | Odds: {s.get('odds', 1.0):.2f}") 
+                dbc.ListGroupItem(f"Match: {s.get('match', 'N/A')} | Prediction: {s.get('prediction', 'N/A')} | Odds: {round(s.get('odds', 1.0), 2):.2f}") 
                 for s in row['selections']
             ]
             picks = dbc.ListGroup(picks_list, flush=True)
@@ -1089,20 +1002,7 @@ def update_display(data, currency, settings):
     })
     if not df_new.empty:
         df_new['date'] = pd.to_datetime(df_new['date'])
-        df_new['status'] = df_new['status'].fillna('Pending')
-        df_new = renumber_slips(df_new)
-    
-    # Display data for tables
-    display_df = df_new.copy()
-    if not display_df.empty:
-        display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d %H:%M')
-        display_df['selections'] = display_df['selections'].apply(
-            lambda x: '\n'.join(f"{s.get('match', '')} {s.get('prediction', '')} @ {s.get('odds', 1.0):.2f}" for s in x) 
-            if isinstance(x, list) and len(x) > 0 else ''
-        )
-        display_df['slip_no'] = display_df['slip_no'].apply(lambda x: f"Slip No: {x}" if pd.notna(x) else '')
-        display_df['status'] = display_df['status'].apply(lambda x: x if pd.notna(x) else 'Pending')
-    table_data = display_df.to_dict('records') if not df_new.empty else []
+    table_data = get_display_data(df_new, currency)
     
     symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
     symbol = symbols.get(currency, '$')
@@ -1114,7 +1014,7 @@ def update_display(data, currency, settings):
     # Compute is_win for settled bets
     settled = pd.DataFrame()
     if not df_new.empty:
-        settled = df_new[df_new['status'] != 'Pending'].copy()
+        settled = df_new[df_new['outcome'].notna()].copy()
         if not settled.empty:
             mask_single_win = (settled['wager_type'] == 'Single') & (settled['outcome'] == settled['prediction'])
             mask_acc_win = (settled['wager_type'] == 'Accumulator') & (settled['outcome'] == 'Win')
@@ -1127,19 +1027,19 @@ def update_display(data, currency, settings):
         wins = settled['is_win'].sum() if not settled.empty else 0
         losses = settled_bets - wins if settled_bets > 0 else 0
         win_rate = (wins / settled_bets * 100) if settled_bets > 0 else 0
-        total_profit = df_new['profit_loss'].sum()
-        total_staked = df_new['bet_amount'].sum()
-        roi = (total_profit / total_staked * 100) if total_staked > 0 else 0
-        avg_odds = df_new['odds'].mean()
-        avg_bet = df_new['bet_amount'].mean()
+        total_profit = round(df_new['profit_loss'].sum(), 2)
+        total_staked = round(df_new['bet_amount'].sum(), 2)
+        roi = round((total_profit / total_staked * 100), 1) if total_staked > 0 else 0
+        avg_odds = round(df_new['odds'].mean(), 2)
+        avg_bet = round(df_new['bet_amount'].mean(), 2)
         max_win_streak, max_loss_streak = get_streaks(df_new)
         
         # Bankroll metrics
-        current_bankroll = settings['initial_bankroll'] + total_profit
-        bankroll_health = (current_bankroll / settings['initial_bankroll']) * 100 if settings['initial_bankroll'] > 0 else 0
+        current_bankroll = round(settings['initial_bankroll'] + total_profit, 2)
+        bankroll_health = round((current_bankroll / settings['initial_bankroll']) * 100, 1) if settings['initial_bankroll'] > 0 else 0
         
         # Bet categories
-        type_profit = settled.groupby('bet_category')['profit_loss'].sum().reset_index()
+        type_profit = settled.groupby('bet_category')['profit_loss'].sum().round(2).reset_index()
         
         summary = [
             dbc.Col(dbc.Card(dbc.CardBody([html.H6("Total Bets"), html.P(total_bets)], className="text-center")), width=3),
@@ -1174,7 +1074,7 @@ def update_display(data, currency, settings):
     # Cumulative P/L Line Chart
     if not df_new.empty:
         df_sorted = df_new.sort_values('date').copy()
-        df_sorted['cumulative_pl'] = df_sorted['profit_loss'].cumsum()
+        df_sorted['cumulative_pl'] = df_sorted['profit_loss'].cumsum().round(2)
         cum_fig = px.line(df_sorted, x='date', y='cumulative_pl', 
                           title="Cumulative Profit/Loss Over Time",
                           labels={'cumulative_pl': f'Cumulative P/L ({symbol})', 'date': 'Date'})
@@ -1219,7 +1119,7 @@ def update_display(data, currency, settings):
             yearly_fig.update_layout(xaxis_title="Year", yaxis_title=f'P/L ({symbol})')
         
         # Monthly P/L
-        monthly_stats = settled.groupby('year_month')['profit_loss'].sum().reset_index()
+        monthly_stats = settled.groupby('year_month')['profit_loss'].sum().round(2).reset_index()
         if not monthly_stats.empty:
             monthly_fig = px.bar(monthly_stats, x='year_month', y='profit_loss',
                                  title=f"Monthly P/L ({symbol})",
@@ -1227,7 +1127,7 @@ def update_display(data, currency, settings):
             monthly_fig.update_layout(xaxis_title="Year-Month", yaxis_title=f'P/L ({symbol})', xaxis_tickangle=45)
         
         # Weekly P/L
-        weekly_stats = settled.groupby('year_week')['profit_loss'].sum().reset_index()
+        weekly_stats = settled.groupby('year_week')['profit_loss'].sum().round(2).reset_index()
         if not weekly_stats.empty:
             weekly_fig = px.bar(weekly_stats, x='year_week', y='profit_loss',
                                 title=f"Weekly P/L ({symbol})",
@@ -1235,7 +1135,7 @@ def update_display(data, currency, settings):
             weekly_fig.update_layout(xaxis_title="Year-Week", yaxis_title=f'P/L ({symbol})', xaxis_tickangle=45)
         
         # Day of Week P/L
-        dow_stats = settled.groupby('day_of_week')['profit_loss'].sum().reset_index()
+        dow_stats = settled.groupby('day_of_week')['profit_loss'].sum().round(2).reset_index()
         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         dow_stats['day_of_week'] = pd.Categorical(dow_stats['day_of_week'], categories=day_order, ordered=True)
         dow_stats = dow_stats.sort_values('day_of_week')
@@ -1255,7 +1155,7 @@ def update_display(data, currency, settings):
         matrix = []
         month_labels = []
         for month in unique_months:
-            month_data = settled[settled['month_year'] == month].groupby('day')['profit_loss'].sum().reindex(range(1, max_day+1), fill_value=0)
+            month_data = settled[settled['month_year'] == month].groupby('day')['profit_loss'].sum().reindex(range(1, max_day+1), fill_value=0).round(2)
             matrix.append(month_data.values)
             month_labels.append(month)
         if matrix:
@@ -1272,7 +1172,7 @@ def update_display(data, currency, settings):
                 xaxis_title="Day of Month",
                 yaxis_title="Month-Year",
                 yaxis=dict(autorange="reversed"),
-                height=400
+                height=300
             )
     
     return table_data, table_data, summary, profit_fig, cum_fig, type_fig, yearly_fig, monthly_fig, weekly_fig, dow_fig, calendar_fig
