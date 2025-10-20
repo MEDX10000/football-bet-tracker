@@ -51,7 +51,7 @@ try:
             """))
             # Insert default account
             default_account = {
-                'id': str(uuid.uuid4()),
+                'id': uuid.uuid4(),
                 'name': 'Default Account',
                 'initial_bankroll': 1000.0,
                 'max_bet_percent': 5.0
@@ -91,6 +91,7 @@ def load_accounts():
             accounts_df = pd.read_sql('SELECT * FROM accounts', conn)
             if accounts_df.empty:
                 return []
+            accounts_df['id'] = accounts_df['id'].apply(str)
             return accounts_df.to_dict('records')
     except Exception as e:
         print(f"Error loading accounts: {e}")
@@ -113,8 +114,8 @@ def save_account(account):
 def delete_account(account_id):
     try:
         with engine.connect() as conn:
-            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': account_id})
-            conn.execute(text('DELETE FROM accounts WHERE id = :id'), {'id': account_id})
+            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': uuid.UUID(account_id)})
+            conn.execute(text('DELETE FROM accounts WHERE id = :id'), {'id': uuid.UUID(account_id)})
             conn.commit()
     except Exception as e:
         print(f"Error deleting account: {e}")
@@ -123,7 +124,7 @@ def delete_account(account_id):
 def load_data(account_id):
     try:
         with engine.connect() as conn:
-            df = pd.read_sql(text('SELECT * FROM bets WHERE account_id = :account_id'), conn, params={'account_id': account_id})
+            df = pd.read_sql(text('SELECT * FROM bets WHERE account_id = :account_id'), conn, params={'account_id': uuid.UUID(account_id)})
             if not df.empty:
                 df = df.astype({
                     'bet_amount': 'float64',
@@ -167,11 +168,11 @@ def save_data(df, account_id):
     try:
         df_save = df.copy()
         df_save['selections'] = df_save['selections'].apply(lambda x: x if isinstance(x, list) else [])
-        df_save['account_id'] = account_id
+        df_save['account_id'] = uuid.UUID(account_id)
         with engine.connect() as conn:
             # Delete old bets for this account to replace
-            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': account_id})
-            df_save.to_sql('bets', conn, if_exists='append', index=False, dtype={'selections': JSON})
+            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': uuid.UUID(account_id)})
+            df_save.to_sql('bets', conn, if_exists='append', index=False, dtype={'selections': JSON, 'account_id': sa.types.UUID()})
             conn.commit()
     except Exception as e:
         print(f"Error saving data: {e}")
@@ -671,7 +672,8 @@ app.layout = dbc.Container([
 
 # Callback to open add account modal
 @app.callback(
-    Output('add-account-modal', 'is_open'),
+    [Output('add-account-modal', 'is_open'),
+     Output('accounts-store', 'data', allow_duplicate=True)],
     [Input('open-add-account-modal-btn', 'n_clicks'),
      Input('add-account-btn', 'n_clicks'),
      Input('cancel-add-account-btn', 'n_clicks')],
@@ -685,12 +687,12 @@ app.layout = dbc.Container([
 def toggle_add_account_modal(open_n, add_n, cancel_n, is_open, name, initial_bankroll, max_bet_percent, accounts):
     ctx = dash.callback_context
     if not ctx.triggered:
-        return no_update
+        return no_update, no_update
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     if button_id == 'open-add-account-modal-btn':
-        return True
+        return True, no_update
     if button_id == 'cancel-add-account-btn':
-        return False
+        return False, no_update
     if button_id == 'add-account-btn' and name and initial_bankroll is not None and max_bet_percent is not None:
         new_account = {
             'id': str(uuid.uuid4()),
@@ -700,8 +702,8 @@ def toggle_add_account_modal(open_n, add_n, cancel_n, is_open, name, initial_ban
         }
         save_account(new_account)
         accounts.append(new_account)
-        return False
-    return is_open
+        return False, accounts
+    return is_open, no_update
 
 # Callback to open delete account modal
 @app.callback(
@@ -725,21 +727,22 @@ def toggle_delete_account_modal(open_n, confirm_n, cancel_n, is_open, account_id
         return False
     if button_id == 'confirm-delete-account-btn' and account_id:
         delete_account(account_id)
-        accounts = [acc for acc in accounts if acc['id'] != account_id]
-        new_account_id = accounts[0]['id'] if accounts else None
+        new_accounts = [acc for acc in accounts if acc['id'] != account_id]
         return False
     return is_open
 
 # Callback to update current account after deletion
 @app.callback(
-    Output('current-account-store', 'data'),
+    [Output('current-account-store', 'data'),
+     Output('accounts-store', 'data', allow_duplicate=True)],
     Input('delete-account-modal', 'is_open'),
-    State('accounts-store', 'data')
+    State('accounts-store', 'data'),
+    prevent_initial_call=True
 )
 def update_current_after_delete(is_open, accounts):
     if not is_open:
-        return accounts[0]['id'] if accounts else None
-    return no_update
+        return accounts[0]['id'] if accounts else None, accounts
+    return no_update, no_update
 
 # Callback to update account dropdown options
 @app.callback(
@@ -775,7 +778,7 @@ def update_current_account(account_id):
 
 # Callback to update settings for current account
 @app.callback(
-    [Output('accounts-store', 'data'),
+    [Output('accounts-store', 'data', allow_duplicate=True),
      Output('settings-feedback', 'children'),
      Output('settings-feedback', 'color'),
      Output('settings-feedback', 'is_open')],
@@ -783,7 +786,8 @@ def update_current_account(account_id):
     [State('initial-bankroll-input', 'value'),
      State('max-bet-percent-input', 'value'),
      State('current-account-store', 'data'),
-     State('accounts-store', 'data')]
+     State('accounts-store', 'data')],
+    prevent_initial_call=True
 )
 def update_settings(n_clicks, initial_bankroll, max_bet_percent, account_id, accounts):
     if n_clicks > 0 and account_id:
