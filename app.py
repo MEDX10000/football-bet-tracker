@@ -117,15 +117,16 @@ def load_settings():
         settings_df = pd.read_sql('SELECT * FROM settings', conn)
         if settings_df.empty:
             settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
+            save_settings(settings)
         else:
             settings = dict(zip(settings_df['key'], settings_df['value']))
     return settings
 
 # Save settings
 def save_settings(settings):
-    settings_df = pd.DataFrame(list(settings.items()), columns=['key', 'value'])
     with engine.connect() as conn:
-        settings_df.to_sql('settings', conn, if_exists='replace', index=False)
+        for k, v in settings.items():
+            conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"), {'key': k, 'value': v})
         conn.commit()
 
 # Get display data for tables
