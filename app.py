@@ -109,6 +109,16 @@ def save_account(account):
     except Exception as e:
         print(f"Error saving account: {e}")
 
+# Delete account
+def delete_account(account_id):
+    try:
+        with engine.connect() as conn:
+            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': account_id})
+            conn.execute(text('DELETE FROM accounts WHERE id = :id'), {'id': account_id})
+            conn.commit()
+    except Exception as e:
+        print(f"Error deleting account: {e}")
+
 # Load data for a specific account
 def load_data(account_id):
     try:
@@ -275,6 +285,16 @@ add_account_modal = dbc.Modal([
     ])
 ], id="add-account-modal", is_open=False)
 
+# Delete Account Modal
+delete_account_modal = dbc.Modal([
+    dbc.ModalHeader(dbc.ModalTitle("Confirm Delete Account")),
+    dbc.ModalBody("Are you sure you want to delete this account? All associated bets will be deleted."),
+    dbc.ModalFooter([
+        dbc.Button("Delete", id='confirm-delete-account-btn', color="danger"),
+        dbc.Button("Cancel", id='cancel-delete-account-btn', color="secondary"),
+    ])
+], id="delete-account-modal", is_open=False)
+
 # Bankroll Settings Card
 bankroll_settings_card = dbc.Card([
     dbc.CardHeader("Bankroll Management Settings", className="h5"),
@@ -285,6 +305,7 @@ bankroll_settings_card = dbc.Card([
         ], className="g-2 mb-3"),
         dbc.Button('Update Settings', id='update-settings-btn', n_clicks=0, color="info"),
         dbc.Button('Add New Account', id='open-add-account-modal-btn', n_clicks=0, color="primary", className="ms-2"),
+        dbc.Button('Delete Current Account', id='open-delete-account-modal-btn', n_clicks=0, color="danger", className="ms-2"),
         dbc.Alert(id='settings-feedback', color="success", dismissable=True, is_open=False, className="d-none mt-2"),
     ])
 ], className="mb-4")
@@ -621,6 +642,7 @@ view_selections_modal = dbc.Modal([
 app.layout = dbc.Container([
     header_with_currency,
     add_account_modal,
+    delete_account_modal,
     dbc.Tabs([
         dbc.Tab(label="Bet Management", children=[
             bankroll_settings_card,
@@ -680,6 +702,44 @@ def toggle_add_account_modal(open_n, add_n, cancel_n, is_open, name, initial_ban
         accounts.append(new_account)
         return False
     return is_open
+
+# Callback to open delete account modal
+@app.callback(
+    Output('delete-account-modal', 'is_open'),
+    [Input('open-delete-account-modal-btn', 'n_clicks'),
+     Input('confirm-delete-account-btn', 'n_clicks'),
+     Input('cancel-delete-account-btn', 'n_clicks')],
+    [State('delete-account-modal', 'is_open'),
+     State('current-account-store', 'data'),
+     State('accounts-store', 'data')],
+    prevent_initial_call=True
+)
+def toggle_delete_account_modal(open_n, confirm_n, cancel_n, is_open, account_id, accounts):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if button_id == 'open-delete-account-modal-btn':
+        return True
+    if button_id == 'cancel-delete-account-btn':
+        return False
+    if button_id == 'confirm-delete-account-btn' and account_id:
+        delete_account(account_id)
+        accounts = [acc for acc in accounts if acc['id'] != account_id]
+        new_account_id = accounts[0]['id'] if accounts else None
+        return False
+    return is_open
+
+# Callback to update current account after deletion
+@app.callback(
+    Output('current-account-store', 'data'),
+    Input('delete-account-modal', 'is_open'),
+    State('accounts-store', 'data')
+)
+def update_current_after_delete(is_open, accounts):
+    if not is_open:
+        return accounts[0]['id'] if accounts else None
+    return no_update
 
 # Callback to update account dropdown options
 @app.callback(
