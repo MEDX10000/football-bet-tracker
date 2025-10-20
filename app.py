@@ -25,7 +25,7 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set")
 
 try:
-    engine = sa.create_engine(DATABASE_URL.replace('postgres://', 'postgresql+psycopg2://'))
+    engine = sa.create_engine(DATABASE_URL.replace('postgres://', 'postgresql+psycopg://'))
 except Exception as e:
     print(f"Error creating database engine: {e}")
     raise
