@@ -19,18 +19,22 @@ app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
 load_figure_template("cyborg")  # Dark theme for charts
 app.title = "Football Bet Tracker Pro"
 
-# Database setup
+# Database setup for bets
 DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set")
 
 try:
-    engine = sa.create_engine(DATABASE_URL.replace('postgres://', 'postgresql+psycopg://'))
+    engine = sa.create_engine(
+        DATABASE_URL
+        .replace('postgres://', 'postgresql+psycopg://')
+        .replace('postgresql://', 'postgresql+psycopg://')
+    )
 except Exception as e:
     print(f"Error creating database engine: {e}")
     raise
 
-# Create tables if they don't exist
+# Create bets table if it doesn't exist
 try:
     with engine.connect() as conn:
         inspector = inspect(engine)
@@ -52,27 +56,12 @@ try:
                     status TEXT
                 )
             """))
-        
-        if not inspector.has_table('settings'):
-            conn.execute(text("""
-                CREATE TABLE settings (
-                    key TEXT PRIMARY KEY,
-                    value FLOAT
-                )
-            """))
-            # Insert default settings
-            defaults = [
-                {'key': 'initial_bankroll', 'value': 1000.0},
-                {'key': 'max_bet_percent', 'value': 5.0}
-            ]
-            for default in defaults:
-                conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value)"), default)
             conn.commit()
 except Exception as e:
-    print(f"Error creating tables: {e}")
+    print(f"Error creating bets table: {e}")
     raise
 
-# Load data
+# Load bets data
 def load_data():
     try:
         with engine.connect() as conn:
@@ -115,7 +104,7 @@ def renumber_slips(df):
         df['slip_no'] = df.index + 1
     return df
 
-# Save data
+# Save bets data
 def save_data(df):
     try:
         df_save = df.copy()
@@ -126,28 +115,28 @@ def save_data(df):
     except Exception as e:
         print(f"Error saving data: {e}")
 
-# Load settings
+# File path for persistent settings (assuming /data mount path from Render disk)
+SETTINGS_FILE = '/data/settings.json'
+
+# Load settings from file
 def load_settings():
     try:
-        with engine.connect() as conn:
-            settings_df = pd.read_sql('SELECT * FROM settings', conn)
-            if settings_df.empty:
-                settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
-                save_settings(settings)
-            else:
-                settings = dict(zip(settings_df['key'], settings_df['value']))
+        with open(SETTINGS_FILE, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
+        save_settings(settings)
         return settings
     except Exception as e:
         print(f"Error loading settings: {e}")
         return {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
 
-# Save settings
+# Save settings to file
 def save_settings(settings):
     try:
-        with engine.connect() as conn:
-            for k, v in settings.items():
-                conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"), {'key': k, 'value': v})
-            conn.commit()
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)  # Ensure directory exists
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f)
     except Exception as e:
         print(f"Error saving settings: {e}")
 
