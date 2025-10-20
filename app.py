@@ -79,6 +79,10 @@ try:
                     account_id UUID REFERENCES accounts(id)
                 )
             """))
+        else:
+            columns = inspector.get_columns('bets')
+            if 'account_id' not in [c['name'] for c in columns]:
+                conn.execute(text("ALTER TABLE bets ADD COLUMN account_id UUID REFERENCES accounts(id)"))
         conn.commit()
 except Exception as e:
     print(f"Error creating tables: {e}")
