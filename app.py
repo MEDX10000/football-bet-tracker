@@ -83,9 +83,13 @@ try:
             columns = inspector.get_columns('bets')
             if 'account_id' not in [c['name'] for c in columns]:
                 conn.execute(text("ALTER TABLE bets ADD COLUMN account_id UUID REFERENCES accounts(id)"))
+                # Update existing bets to default account if any
+                default_id = conn.execute(text("SELECT id FROM accounts WHERE name = 'Default Account'")).fetchone()
+                if default_id:
+                    conn.execute(text("UPDATE bets SET account_id = :default_id WHERE account_id IS NULL"), {'default_id': default_id[0]})
         conn.commit()
 except Exception as e:
-    print(f"Error creating tables: {e}")
+    print(f"Error creating tables or migrating: {e}")
     raise
 
 # Load accounts
@@ -788,7 +792,7 @@ def update_current_account(account_id):
      Output('settings-feedback', 'is_open')],
     Input('update-settings-btn', 'n_clicks'),
     [State('initial-bankroll-input', 'value'),
-     State('max-bet-percent-input', 'value'),
+     State('max_bet-percent-input', 'value'),
      State('current-account-store', 'data'),
      State('accounts-store', 'data')],
     prevent_initial_call=True
