@@ -13,6 +13,7 @@ import operator
 import sqlalchemy as sa
 from sqlalchemy import inspect, text, JSON
 import numpy as np
+import uuid
 
 # Initialize the app with Bootstrap theme
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG])
@@ -39,6 +40,27 @@ try:
     with engine.connect() as conn:
         inspector = inspect(engine)
         
+        if not inspector.has_table('accounts'):
+            conn.execute(text("""
+                CREATE TABLE accounts (
+                    id UUID PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    initial_bankroll FLOAT NOT NULL,
+                    max_bet_percent FLOAT NOT NULL
+                )
+            """))
+            # Insert default account
+            default_account = {
+                'id': str(uuid.uuid4()),
+                'name': 'Default Account',
+                'initial_bankroll': 1000.0,
+                'max_bet_percent': 5.0
+            }
+            conn.execute(text("""
+                INSERT INTO accounts (id, name, initial_bankroll, max_bet_percent)
+                VALUES (:id, :name, :initial_bankroll, :max_bet_percent)
+            """), default_account)
+        
         if not inspector.has_table('bets'):
             conn.execute(text("""
                 CREATE TABLE bets (
@@ -53,34 +75,45 @@ try:
                     wager_type TEXT,
                     selections JSONB,
                     slip_no INTEGER,
-                    status TEXT
+                    status TEXT,
+                    account_id UUID REFERENCES accounts(id)
                 )
             """))
-        
-        if not inspector.has_table('settings'):
-            conn.execute(text("""
-                CREATE TABLE settings (
-                    key TEXT PRIMARY KEY,
-                    value FLOAT
-                )
-            """))
-            # Insert default settings
-            defaults = [
-                {'key': 'initial_bankroll', 'value': 1000.0},
-                {'key': 'max_bet_percent', 'value': 5.0}
-            ]
-            for default in defaults:
-                conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value)"), default)
-            conn.commit()
+        conn.commit()
 except Exception as e:
     print(f"Error creating tables: {e}")
     raise
 
-# Load data
-def load_data():
+# Load accounts
+def load_accounts():
     try:
         with engine.connect() as conn:
-            df = pd.read_sql('SELECT * FROM bets', conn)
+            accounts_df = pd.read_sql('SELECT * FROM accounts', conn)
+            if accounts_df.empty:
+                return []
+            return accounts_df.to_dict('records')
+    except Exception as e:
+        print(f"Error loading accounts: {e}")
+        return []
+
+# Save account
+def save_account(account):
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("""
+                INSERT INTO accounts (id, name, initial_bankroll, max_bet_percent)
+                VALUES (:id, :name, :initial_bankroll, :max_bet_percent)
+                ON CONFLICT (name) DO UPDATE SET initial_bankroll = EXCLUDED.initial_bankroll, max_bet_percent = EXCLUDED.max_bet_percent
+            """), account)
+            conn.commit()
+    except Exception as e:
+        print(f"Error saving account: {e}")
+
+# Load data for a specific account
+def load_data(account_id):
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(text('SELECT * FROM bets WHERE account_id = :account_id'), conn, params={'account_id': account_id})
             if not df.empty:
                 df = df.astype({
                     'bet_amount': 'float64',
@@ -100,7 +133,7 @@ def load_data():
             else:
                 df = pd.DataFrame(columns=[
                     'date', 'match', 'prediction', 'bet_amount', 'odds', 
-                    'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status'
+                    'outcome', 'result_amount', 'profit_loss', 'wager_type', 'selections', 'slip_no', 'status', 'account_id'
                 ])
                 df = df.astype({
                     'bet_amount': 'float64',
@@ -119,41 +152,19 @@ def renumber_slips(df):
         df['slip_no'] = df.index + 1
     return df
 
-# Save data
-def save_data(df):
+# Save data for a specific account
+def save_data(df, account_id):
     try:
         df_save = df.copy()
         df_save['selections'] = df_save['selections'].apply(lambda x: x if isinstance(x, list) else [])
+        df_save['account_id'] = account_id
         with engine.connect() as conn:
-            df_save.to_sql('bets', conn, if_exists='replace', index=False, dtype={'selections': JSON})
+            # Delete old bets for this account to replace
+            conn.execute(text('DELETE FROM bets WHERE account_id = :account_id'), {'account_id': account_id})
+            df_save.to_sql('bets', conn, if_exists='append', index=False, dtype={'selections': JSON})
             conn.commit()
     except Exception as e:
         print(f"Error saving data: {e}")
-
-# Load settings
-def load_settings():
-    try:
-        with engine.connect() as conn:
-            settings_df = pd.read_sql('SELECT * FROM settings', conn)
-            if settings_df.empty:
-                settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
-                save_settings(settings)
-            else:
-                settings = dict(zip(settings_df['key'], settings_df['value']))
-        return settings
-    except Exception as e:
-        print(f"Error loading settings: {e}")
-        return {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
-
-# Save settings
-def save_settings(settings):
-    try:
-        with engine.connect() as conn:
-            for k, v in settings.items():
-                conn.execute(text("INSERT INTO settings (key, value) VALUES (:key, :value) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"), {'key': k, 'value': v})
-            conn.commit()
-    except Exception as e:
-        print(f"Error saving settings: {e}")
 
 # Get display data for tables
 def get_display_data(df_raw, currency):
@@ -175,10 +186,9 @@ def get_display_data(df_raw, currency):
     return df.to_dict('records')
 
 # Initial data
-df = load_data()
-settings = load_settings()
-
-# Initial display data
+accounts = load_accounts()
+default_account_id = accounts[0]['id'] if accounts else None
+df = load_data(default_account_id) if default_account_id else pd.DataFrame()
 initial_table_data = get_display_data(df, 'USD')
 
 # Function to categorize bet type
@@ -213,6 +223,13 @@ header = dbc.NavbarSimple(
     dark=True,
 )
 
+account_dropdown = dcc.Dropdown(
+    id='account-dropdown',
+    options=[{'label': acc['name'], 'value': acc['id']} for acc in accounts],
+    value=default_account_id,
+    style={'width': '200px', 'margin-left': '10px'}
+)
+
 currency_dropdown = dcc.Dropdown(
     id='currency-dropdown',
     options=[
@@ -221,7 +238,7 @@ currency_dropdown = dcc.Dropdown(
         {'label': 'Euros (EUR)', 'value': 'EUR'}
     ],
     value='USD',
-    style={'width': '120px', 'margin-left': 'auto'}
+    style={'width': '120px', 'margin-left': '10px'}
 )
 
 header_with_currency = dbc.Navbar(
@@ -230,21 +247,44 @@ header_with_currency = dbc.Navbar(
             html.H2("Football Bet Tracker Pro", className="navbar-brand"),
             dbc.NavbarToggler(id="navbar-toggler", className="ms-auto"),
         ], className="container-fluid"),
-        dbc.Collapse(currency_dropdown, id="navbar-collapse", is_open=True, className="ms-auto"),
+        dbc.Collapse(
+            html.Div([
+                html.Label("Account: "),
+                account_dropdown,
+                html.Label("Currency: ", style={'margin-left': '10px'}),
+                currency_dropdown,
+            ], style={'display': 'flex', 'alignItems': 'center'}),
+            id="navbar-collapse", is_open=True, className="ms-auto"
+        ),
     ],
     color="primary",
     dark=True,
 )
+
+# Add Account Modal
+add_account_modal = dbc.Modal([
+    dbc.ModalHeader(dbc.ModalTitle("Add New Account")),
+    dbc.ModalBody([
+        dbc.Input(id='new-account-name', placeholder='Account Name', type='text'),
+        dbc.Input(id='new-initial-bankroll', placeholder='Initial Bankroll', type='number', value=1000.0),
+        dbc.Input(id='new-max-bet-percent', placeholder='Max Bet %', type='number', value=5.0, step=0.1),
+    ]),
+    dbc.ModalFooter([
+        dbc.Button("Add Account", id='add-account-btn', color="primary"),
+        dbc.Button("Cancel", id='cancel-add-account-btn', color="secondary"),
+    ])
+], id="add-account-modal", is_open=False)
 
 # Bankroll Settings Card
 bankroll_settings_card = dbc.Card([
     dbc.CardHeader("Bankroll Management Settings", className="h5"),
     dbc.CardBody([
         dbc.Row([
-            dbc.Col(dbc.Input(id='initial-bankroll-input', placeholder='Initial Bankroll', type='number', value=settings['initial_bankroll']), width=6),
-            dbc.Col(dbc.Input(id='max-bet-percent-input', placeholder='Max Bet % (e.g., 5)', type='number', value=settings['max_bet_percent'], step=0.1), width=6),
+            dbc.Col(dbc.Input(id='initial-bankroll-input', placeholder='Initial Bankroll', type='number'), width=6),
+            dbc.Col(dbc.Input(id='max-bet-percent-input', placeholder='Max Bet % (e.g., 5)', type='number', step=0.1), width=6),
         ], className="g-2 mb-3"),
         dbc.Button('Update Settings', id='update-settings-btn', n_clicks=0, color="info"),
+        dbc.Button('Add New Account', id='open-add-account-modal-btn', n_clicks=0, color="primary", className="ms-2"),
         dbc.Alert(id='settings-feedback', color="success", dismissable=True, is_open=False, className="d-none mt-2"),
     ])
 ], className="mb-4")
@@ -294,7 +334,7 @@ add_bet_card = dbc.Card([
 
 columns = [
     {"name": i.replace('_', ' ').title() if i not in ['date', 'selections', 'profit_loss', 'result_amount', 'slip_no'] else 'Date' if i=='date' else 'Selections' if i=='selections' else 'Profit/Loss' if i=='profit_loss' else 'Result Amount' if i=='result_amount' else 'Slip No' if i=='slip_no' else i.title(), "id": i} 
-    for i in df.columns if i not in ['status']
+    for i in df.columns if i not in ['status', 'account_id']
 ]
 columns.append({"name": "Status", "id": "status"})
 
@@ -580,6 +620,7 @@ view_selections_modal = dbc.Modal([
 # Main layout
 app.layout = dbc.Container([
     header_with_currency,
+    add_account_modal,
     dbc.Tabs([
         dbc.Tab(label="Bet Management", children=[
             bankroll_settings_card,
@@ -601,44 +642,101 @@ app.layout = dbc.Container([
     delete_modal,
     view_selections_modal,
     dcc.Store(id='data-store', data=df.to_dict('records')),
-    dcc.Store(id='settings-store', data=settings),
+    dcc.Store(id='accounts-store', data=accounts),
+    dcc.Store(id='current-account-store', data=default_account_id),
     dcc.Store(id='currency-store', data='USD')
 ], fluid=True)
 
-# Callback to update currency store
+# Callback to open add account modal
 @app.callback(
-    Output('currency-store', 'data'),
-    Input('currency-dropdown', 'value')
+    Output('add-account-modal', 'is_open'),
+    [Input('open-add-account-modal-btn', 'n_clicks'),
+     Input('add-account-btn', 'n_clicks'),
+     Input('cancel-add-account-btn', 'n_clicks')],
+    [State('add-account-modal', 'is_open'),
+     State('new-account-name', 'value'),
+     State('new-initial-bankroll', 'value'),
+     State('new-max-bet-percent', 'value'),
+     State('accounts-store', 'data')],
+    prevent_initial_call=True
 )
-def update_currency(value):
-    return value if value else 'USD'
+def toggle_add_account_modal(open_n, add_n, cancel_n, is_open, name, initial_bankroll, max_bet_percent, accounts):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if button_id == 'open-add-account-modal-btn':
+        return True
+    if button_id == 'cancel-add-account-btn':
+        return False
+    if button_id == 'add-account-btn' and name and initial_bankroll is not None and max_bet_percent is not None:
+        new_account = {
+            'id': str(uuid.uuid4()),
+            'name': name,
+            'initial_bankroll': float(initial_bankroll),
+            'max_bet_percent': float(max_bet_percent)
+        }
+        save_account(new_account)
+        accounts.append(new_account)
+        return False
+    return is_open
 
-# Callback to update settings
+# Callback to update account dropdown options
 @app.callback(
-    [Output('settings-store', 'data'),
+    Output('account-dropdown', 'options'),
+    Input('accounts-store', 'data')
+)
+def update_account_options(accounts):
+    return [{'label': acc['name'], 'value': acc['id']} for acc in accounts]
+
+# Callback to load current account settings and data
+@app.callback(
+    [Output('initial-bankroll-input', 'value'),
+     Output('max-bet-percent-input', 'value'),
+     Output('data-store', 'data')],
+    Input('account-dropdown', 'value'),
+    State('accounts-store', 'data')
+)
+def load_current_account(account_id, accounts):
+    if account_id:
+        current_account = next((acc for acc in accounts if acc['id'] == account_id), None)
+        if current_account:
+            df = load_data(account_id)
+            return current_account['initial_bankroll'], current_account['max_bet_percent'], df.to_dict('records')
+    return 1000.0, 5.0, []
+
+# Callback to update current account store
+@app.callback(
+    Output('current-account-store', 'data'),
+    Input('account-dropdown', 'value')
+)
+def update_current_account(account_id):
+    return account_id
+
+# Callback to update settings for current account
+@app.callback(
+    [Output('accounts-store', 'data'),
      Output('settings-feedback', 'children'),
      Output('settings-feedback', 'color'),
      Output('settings-feedback', 'is_open')],
     Input('update-settings-btn', 'n_clicks'),
     [State('initial-bankroll-input', 'value'),
      State('max-bet-percent-input', 'value'),
-     State('settings-store', 'data')]
+     State('current-account-store', 'data'),
+     State('accounts-store', 'data')]
 )
-def update_settings(n_clicks, initial_bankroll, max_bet_percent, current_settings):
-    try:
-        if n_clicks > 0:
-            if initial_bankroll is not None and max_bet_percent is not None:
-                new_settings = current_settings.copy()
-                new_settings['initial_bankroll'] = float(initial_bankroll)
-                new_settings['max_bet_percent'] = float(max_bet_percent)
-                save_settings(new_settings)
-                return new_settings, "Settings updated successfully!", "success", True
-            else:
-                return no_update, "Please enter both values.", "danger", True
-        return no_update, "", "info", False
-    except Exception as e:
-        print(f"Error in update_settings callback: {e}")
-        return no_update, "Error updating settings.", "danger", True
+def update_settings(n_clicks, initial_bankroll, max_bet_percent, account_id, accounts):
+    if n_clicks > 0 and account_id:
+        if initial_bankroll is not None and max_bet_percent is not None:
+            current_account = next((acc for acc in accounts if acc['id'] == account_id), None)
+            if current_account:
+                current_account['initial_bankroll'] = float(initial_bankroll)
+                current_account['max_bet_percent'] = float(max_bet_percent)
+                save_account(current_account)
+                return accounts, "Settings updated successfully!", "success", True
+        else:
+            return no_update, "Please enter both values.", "danger", True
+    return no_update, "", "info", False
 
 # Callback to toggle add inputs
 @app.callback(
@@ -665,12 +763,7 @@ def toggle_edit_inputs(bet_type):
      Output('add-feedback', 'is_open'),
      Output('risky-wager-alert', 'children'),
      Output('risky-wager-alert', 'is_open'),
-     Output('data-store', 'data'),
-     Output('match-input', 'value'),
-     Output('prediction-input', 'value'),
-     Output('selections-input', 'value'),
-     Output('bet-amount-input', 'value'),
-     Output('odds-input', 'value')],
+     Output('data-store', 'data')],
     [Input('add-bet-btn', 'n_clicks')],
     [State('bet-type-select', 'value'),
      State('match-input', 'value'),
@@ -679,33 +772,40 @@ def toggle_edit_inputs(bet_type):
      State('bet-amount-input', 'value'),
      State('odds-input', 'value'),
      State('data-store', 'data'),
-     State('settings-store', 'data'),
+     State('current-account-store', 'data'),
+     State('accounts-store', 'data'),
      State('currency-store', 'data')]
 )
-def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount, odds_input, data, settings, currency):
+def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount, odds_input, data, account_id, accounts, currency):
+    if not account_id:
+        return "No account selected.", "danger", True, "", False, no_update
     try:
         symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
         symbol = symbols.get(currency, '$')
         if n_clicks > 0 and bet_amount:
             bet_amount = float(bet_amount)
+            # Get current account
+            current_account = next((acc for acc in accounts if acc['id'] == account_id), None)
+            if not current_account:
+                return "Account not found.", "danger", True, "", False, no_update
             # Bankroll check
             df_temp = pd.DataFrame(data)
             total_profit = df_temp['profit_loss'].sum() if not df_temp.empty else 0
-            current_bankroll = settings['initial_bankroll'] + total_profit
-            max_allowed_bet = (settings['max_bet_percent'] / 100) * current_bankroll
+            current_bankroll = current_account['initial_bankroll'] + total_profit
+            max_allowed_bet = (current_account['max_bet_percent'] / 100) * current_bankroll
             is_risky = bet_amount > max_allowed_bet
-            risky_msg = f"Warning: Bet amount ({symbol}{bet_amount:.2f}) exceeds {settings['max_bet_percent']}% of current bankroll ({symbol}{current_bankroll:.2f}). Max allowed: {symbol}{max_allowed_bet:.2f}"
+            risky_msg = f"Warning: Bet amount ({symbol}{bet_amount:.2f}) exceeds {current_account['max_bet_percent']}% of current bankroll ({symbol}{current_bankroll:.2f}). Max allowed: {symbol}{max_allowed_bet:.2f}"
 
             if wager_type == 'Single':
                 if not match or not prediction or not odds_input:
-                    return "Missing match, prediction, or odds for Single bet.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
+                    return "Missing match, prediction, or odds for Single bet.", "danger", True, "", False, no_update
                 odds = float(odds_input)
                 selections = [{'match': match, 'prediction': prediction, 'odds': odds}]
                 display_match = match
                 display_prediction = prediction
             else:
                 if not selections_text:
-                    return "Missing selections for Accumulator.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
+                    return "Missing selections for Accumulator.", "danger", True, "", False, no_update
                 lines = [line.strip() for line in selections_text.split('\n') if line.strip()]
                 selections = []
                 for line in lines:
@@ -720,7 +820,7 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
                     except ValueError:
                         continue
                 if not selections:
-                    return "Invalid selections format for Accumulator. Each line should be 'Match Prediction Odds'.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
+                    return "Invalid selections format for Accumulator. Each line should be 'Match Prediction Odds'.", "danger", True, "", False, no_update
                 display_prediction = "Accumulator Win"
                 total_odds = reduce(operator.mul, [s['odds'] for s in selections], 1.0)
                 display_match = f"Accumulator ({len(selections)} selections)"
@@ -751,14 +851,13 @@ def add_bet(n_clicks, wager_type, match, prediction, selections_text, bet_amount
             })
             df_new = pd.concat([df_new, pd.DataFrame([new_bet])], ignore_index=True)
             df_new = renumber_slips(df_new)
-            save_data(df_new)
+            save_data(df_new, account_id)
             feedback_msg = f"{wager_type} bet added for {display_match}!"
             feedback_color = "warning" if is_risky else "success"
-            return feedback_msg, feedback_color, True, risky_msg if is_risky else "", is_risky, df_new.to_dict('records'), '', '', '', '', ''
-        return "", "info", False, "", False, no_update, no_update, no_update, no_update, no_update, no_update
+            return feedback_msg, feedback_color, True, risky_msg if is_risky else "", is_risky, df_new.to_dict('records')
     except Exception as e:
         print(f"Error in add_bet callback: {e}")
-        return "Error adding bet.", "danger", True, "", False, no_update, no_update, no_update, no_update, no_update, no_update
+        return "Error adding bet.", "danger", True, "", False, no_update
 
 # Callback to open edit modal
 @app.callback(
@@ -823,10 +922,11 @@ def close_edit_modal(n_clicks):
      State('edit-selections-input', 'value'),
      State('data-store', 'data'),
      State('bets-table-update', 'selected_rows'),
-     State('currency-store', 'data')],
+     State('currency-store', 'data'),
+     State('current-account-store', 'data')],
     prevent_initial_call=True
 )
-def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, outcome_input, selections_text, data, selected_rows, currency):
+def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, outcome_input, selections_text, data, selected_rows, currency, account_id):
     try:
         symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
         symbol = symbols.get(currency, '$')
@@ -925,7 +1025,7 @@ def save_edit(n_clicks, wager_type, match, prediction, bet_amount, odds_input, o
             df_new.at[idx, 'profit_loss'] = profit_loss
             df_new.at[idx, 'status'] = status
             df_new = renumber_slips(df_new)
-            save_data(df_new)
+            save_data(df_new, account_id)
             display_data = get_display_data(df_new, currency)
             feedback_msg = f"Bet updated to {status}!" if status != 'Pending' else "Bet set to Pending!"
             return False, df_new.to_dict('records'), display_data, feedback_msg, "success" if status == 'Win' else "danger" if status == 'Loss' else "info", True
@@ -966,10 +1066,11 @@ def close_delete_modal(n_clicks):
     Input('confirm-delete-btn', 'n_clicks'),
     [State('data-store', 'data'),
      State('bets-table-update', 'selected_rows'),
-     State('currency-store', 'data')],
+     State('currency-store', 'data'),
+     State('current-account-store', 'data')],
     prevent_initial_call=True
 )
-def confirm_delete(n_clicks, data, selected_rows, currency):
+def confirm_delete(n_clicks, data, selected_rows, currency, account_id):
     try:
         if n_clicks > 0 and selected_rows and selected_rows[0] is not None:
             idx = selected_rows[0]
@@ -982,7 +1083,7 @@ def confirm_delete(n_clicks, data, selected_rows, currency):
             })
             df_new = df_new.drop(idx).reset_index(drop=True)
             df_new = renumber_slips(df_new)
-            save_data(df_new)
+            save_data(df_new, account_id)
             display_data = get_display_data(df_new, currency)
             return False, df_new.to_dict('records'), display_data, "Bet deleted successfully!", "warning", True
         return no_update, no_update, no_update, "Delete failed.", "danger", True
@@ -1001,10 +1102,11 @@ def confirm_delete(n_clicks, data, selected_rows, currency):
     [State('bets-table-update', 'selected_rows'),
      State('outcome-input', 'value'),
      State('data-store', 'data'),
-     State('currency-store', 'data')],
+     State('currency-store', 'data'),
+     State('current-account-store', 'data')],
     prevent_initial_call=True
 )
-def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
+def update_outcome(n_clicks, selected_rows, outcome_input, data, currency, account_id):
     try:
         symbols = {'NLE': 'Le', 'USD': '$', 'EUR': '€'}
         symbol = symbols.get(currency, '$')
@@ -1074,7 +1176,7 @@ def update_outcome(n_clicks, selected_rows, outcome_input, data, currency):
             df_new.at[idx, 'profit_loss'] = profit_loss
             df_new.at[idx, 'status'] = status
             df_new = renumber_slips(df_new)
-            save_data(df_new)
+            save_data(df_new, account_id)
             display_data = get_display_data(df_new, currency)
             if status == 'Pending':
                 feedback_msg = f"Set bet {idx} to Pending"
@@ -1138,10 +1240,14 @@ def view_selections(active1, active2, close_clicks, data):
      Output('weekly-chart', 'figure'),
      Output('dow-chart', 'figure'),
      Output('calendar-heatmap', 'figure')],
-    [Input('data-store', 'data'), Input('currency-store', 'data'), Input('settings-store', 'data')]
+    [Input('data-store', 'data'), Input('currency-store', 'data'), Input('current-account-store', 'data'), Input('accounts-store', 'data')]
 )
-def update_display(data, currency, settings):
+def update_display(data, currency, account_id, accounts):
     try:
+        current_account = next((acc for acc in accounts if acc['id'] == account_id), None)
+        if not current_account:
+            return [], [], [], px.bar(title="No account selected"), px.line(title="No account selected"), px.bar(title="No account selected"), px.bar(title="No account selected"), px.bar(title="No account selected"), px.bar(title="No account selected"), px.bar(title="No account selected"), go.Figure()
+        
         df_new = pd.DataFrame(data)
         df_new = df_new.astype({
             'bet_amount': 'float64',
@@ -1187,8 +1293,8 @@ def update_display(data, currency, settings):
             max_win_streak, max_loss_streak = get_streaks(df_new)
             
             # Bankroll metrics
-            current_bankroll = round(settings['initial_bankroll'] + total_profit, 2)
-            bankroll_health = round((current_bankroll / settings['initial_bankroll']) * 100, 1) if settings['initial_bankroll'] > 0 else 0
+            current_bankroll = round(current_account['initial_bankroll'] + total_profit, 2)
+            bankroll_health = round((current_bankroll / current_account['initial_bankroll']) * 100, 1) if current_account['initial_bankroll'] > 0 else 0
             
             # Bet categories
             type_profit = settled.groupby('bet_category')['profit_loss'].sum().round(2).reset_index()
@@ -1203,8 +1309,8 @@ def update_display(data, currency, settings):
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("ROI"), html.P(f"{roi:.1f}%")], className="text-center", style={'color': 'green' if roi >= 0 else 'red'})), width=3),
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("Total P/L"), html.P(f"{symbol}{total_profit:+.2f}")], className="text-center", style={'color': 'green' if total_profit >= 0 else 'red'})), width=3),
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("Total Staked"), html.P(f"{symbol}{total_staked:.2f}")], className="text-center")), width=3),
-                dbc.Col(dbc.Card(dbc.CardBody([html.H6("Initial Bankroll"), html.P(f"{symbol}{settings['initial_bankroll']:.2f}")], className="text-center")), width=3),
-                dbc.Col(dbc.Card(dbc.CardBody([html.H6("Current Bankroll"), html.P(f"{symbol}{current_bankroll:.2f}")], className="text-center", style={'color': 'green' if current_bankroll >= settings['initial_bankroll'] else 'red'})), width=3),
+                dbc.Col(dbc.Card(dbc.CardBody([html.H6("Initial Bankroll"), html.P(f"{symbol}{current_account['initial_bankroll']:.2f}")], className="text-center")), width=3),
+                dbc.Col(dbc.Card(dbc.CardBody([html.H6("Current Bankroll"), html.P(f"{symbol}{current_bankroll:.2f}")], className="text-center", style={'color': 'green' if current_bankroll >= current_account['initial_bankroll'] else 'red'})), width=3),
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("Bankroll Health"), html.P(f"{bankroll_health:.1f}%")], className="text-center", style={'color': 'green' if bankroll_health >= 100 else 'red'})), width=3),
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("Avg Odds"), html.P(f"{avg_odds:.2f}")], className="text-center")), width=3),
                 dbc.Col(dbc.Card(dbc.CardBody([html.H6("Avg Bet"), html.P(f"{symbol}{avg_bet:.2f}")], className="text-center")), width=3),
