@@ -24,7 +24,7 @@ DATABASE_URL = os.environ.get('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable not set")
 
-engine = sa.create_engine(DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://'))
+engine = sa.create_engine(DATABASE_URL.replace('postgres://', 'postgresql+psycopg2://'))
 
 # Create tables if they don't exist
 with engine.connect() as conn:
