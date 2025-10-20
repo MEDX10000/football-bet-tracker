@@ -117,7 +117,6 @@ def load_settings():
         settings_df = pd.read_sql('SELECT * FROM settings', conn)
         if settings_df.empty:
             settings = {'initial_bankroll': 1000.0, 'max_bet_percent': 5.0}
-            save_settings(settings)
         else:
             settings = dict(zip(settings_df['key'], settings_df['value']))
     return settings
